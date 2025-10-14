@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pandas==2.2.2
+evidently==0.4.33
+scikit-learn==1.5.2
+w3storage==0.0.7
+python-dotenv==1.0.1
+web3==6.20.1
+orjson==3.10.7
