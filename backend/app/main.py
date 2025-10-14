@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from web3 import Web3
-from w3storage import API as W3S
+import requests
 
 load_dotenv()
 
@@ -128,8 +128,22 @@ async def upload_dataset(file: UploadFile = File(...), license: str = "CC-BY"):
     if not WEB3_STORAGE_TOKEN:
         raise HTTPException(500, "WEB3_STORAGE_TOKEN missing")
 
-    w3s = W3S(token=WEB3_STORAGE_TOKEN)
-    cid = w3s.post_upload([("file", (file.filename, content))])["cid"]
+    # Use web3.storage HTTP API directly (stable)
+    resp = requests.post(
+        "https://api.web3.storage/upload",
+        headers={
+            "Authorization": f"Bearer {WEB3_STORAGE_TOKEN}",
+        },
+        files={
+            "file": (file.filename, content, "application/octet-stream"),
+        },
+        timeout=60,
+    )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"web3.storage upload failed: {resp.text}")
+    cid = resp.json().get("cid") or resp.json().get("data", {}).get("cid")
+    if not cid:
+        raise HTTPException(502, "web3.storage response missing cid")
 
     # Build and send transaction to mint
     w3, contract = get_w3_and_contract()
