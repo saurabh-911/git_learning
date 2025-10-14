@@ -164,6 +164,7 @@ async def upload_dataset(file: UploadFile = File(...), license: str = "CC-BY"):
             {
                 "from": sender,
                 "nonce": nonce,
+                "chainId": w3.eth.chain_id,
                 "gas": 800000,
                 "maxFeePerGas": w3.to_wei("100", "gwei"),
                 "maxPriorityFeePerGas": w3.to_wei("2", "gwei"),
