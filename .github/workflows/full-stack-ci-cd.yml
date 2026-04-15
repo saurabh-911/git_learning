@@ -1,0 +1,94 @@
+name: Full Stack CI/CD
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+
+# =========================
+# 🟢 FRONTEND BUILD + TEST
+# =========================
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm run test --if-present
+
+      - name: Build Next.js
+        run: npm run build
+
+      - name: Export static (for GitHub Pages)
+        run: npm run export
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./frontend/out
+
+# =========================
+# 🔵 BACKEND BUILD + TEST
+# =========================
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build & Test
+        run: mvn clean verify
+
+      - name: Package JAR
+        run: mvn package -DskipTests
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: backend/target/*.jar
+
+# =========================
+# 🚀 DEPLOY FRONTEND
+# =========================
+  deploy-frontend:
+    needs: frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
+
+# =========================
+# 🚀 DEPLOY BACKEND
+# =========================
+  deploy-backend:
+    needs: backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render Deploy
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
