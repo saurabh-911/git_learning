@@ -3,8 +3,7 @@ package com.example.trainbooking.queue;
 import com.example.trainbooking.config.TrafficControlProperties;
 import com.example.trainbooking.dto.QueueStatusResponse;
 import com.example.trainbooking.exception.ApiException;
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -12,71 +11,53 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class QueueService {
 
     private static final String BOOKING_QUEUE = "booking_queue";
-    private static final String ADMITTED_PREFIX = "queue:admitted:";
-    private static final String TOKEN_PREFIX = "queue:token:";
+    private static final String ADMITTED_SET = "booking_admitted";
 
     private final StringRedisTemplate redisTemplate;
     private final TrafficControlProperties properties;
 
-    public QueueService(StringRedisTemplate redisTemplate, TrafficControlProperties properties, MeterRegistry meterRegistry) {
-        this.redisTemplate = redisTemplate;
-        this.properties = properties;
-        Gauge.builder("booking.queue.size", this, QueueService::getQueueSizeGauge).register(meterRegistry);
-    }
-
-    public void enqueueIfAbsent(String userId, String userTier) {
+    public void enqueueIfAbsent(String userId) {
         Long size = redisTemplate.opsForZSet().size(BOOKING_QUEUE);
         if (size != null && size >= properties.queue().maxQueueSize()) {
             throw new ApiException("Virtual waiting room is full. Please retry in a few seconds.");
         }
         Double score = redisTemplate.opsForZSet().score(BOOKING_QUEUE, userId);
         if (score == null) {
-            redisTemplate.opsForZSet().add(BOOKING_QUEUE, userId, calculateScore(userTier));
-            log.debug("User {} added to queue tier={}", userId, userTier);
+            redisTemplate.opsForZSet().add(BOOKING_QUEUE, userId, Instant.now().toEpochMilli());
+            log.debug("User {} added to queue", userId);
         }
     }
 
     public QueueStatusResponse getStatus(String userId) {
         Long rank = redisTemplate.opsForZSet().rank(BOOKING_QUEUE, userId);
-        boolean admitted = isAdmitted(userId);
+        boolean admitted = Boolean.TRUE.equals(redisTemplate.opsForSet().isMember(ADMITTED_SET, userId));
 
         if (admitted) {
-            String token = issueOrGetQueueToken(userId);
-            return new QueueStatusResponse(userId, 0L, 0L, true, token, 30L);
+            return new QueueStatusResponse(userId, 0L, 0L, true);
         }
         if (rank == null) {
-            return new QueueStatusResponse(userId, -1L, 0L, false, null, 0L);
+            return new QueueStatusResponse(userId, -1L, 0L, false);
         }
-
         long position = rank + 1;
         long releaseRate = Math.max(1, properties.queue().releasesPerSecond());
         long estimatedWait = Math.max(1, position / releaseRate) * properties.queue().avgServiceSeconds();
-        return new QueueStatusResponse(userId, position, estimatedWait, false, null, 0L);
+        return new QueueStatusResponse(userId, position, estimatedWait, false);
     }
 
     public boolean isAdmitted(String userId) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(ADMITTED_PREFIX + userId));
-    }
-
-    public boolean validateQueueToken(String userId, String token) {
-        if (token == null || token.isBlank()) {
-            return false;
-        }
-        String saved = redisTemplate.opsForValue().get(TOKEN_PREFIX + userId);
-        return token.equals(saved);
+        return Boolean.TRUE.equals(redisTemplate.opsForSet().isMember(ADMITTED_SET, userId));
     }
 
     public void consumeAdmission(String userId) {
-        redisTemplate.delete(ADMITTED_PREFIX + userId);
-        redisTemplate.delete(TOKEN_PREFIX + userId);
+        redisTemplate.opsForSet().remove(ADMITTED_SET, userId);
     }
 
     public void releaseUsers() {
@@ -85,34 +66,11 @@ public class QueueService {
         if (nextUsers == null || nextUsers.isEmpty()) {
             return;
         }
-
         nextUsers.stream().filter(Objects::nonNull).forEach(userId -> {
-            redisTemplate.opsForValue().set(ADMITTED_PREFIX + userId, "1", 60, TimeUnit.SECONDS);
+            redisTemplate.opsForSet().add(ADMITTED_SET, userId);
+            redisTemplate.expire(ADMITTED_SET, 1, TimeUnit.MINUTES);
             redisTemplate.opsForZSet().remove(BOOKING_QUEUE, userId);
         });
         log.info("Released {} users from virtual waiting room", nextUsers.size());
-    }
-
-    private String issueOrGetQueueToken(String userId) {
-        String key = TOKEN_PREFIX + userId;
-        String existing = redisTemplate.opsForValue().get(key);
-        if (existing != null) {
-            return existing;
-        }
-
-        String token = UUID.randomUUID().toString();
-        redisTemplate.opsForValue().set(key, token, 30, TimeUnit.SECONDS);
-        return token;
-    }
-
-    private double calculateScore(String userTier) {
-        long now = Instant.now().toEpochMilli();
-        long priorityWeightMs = "PREMIUM".equalsIgnoreCase(userTier) ? 120_000L : 0L;
-        return now - priorityWeightMs;
-    }
-
-    private double getQueueSizeGauge() {
-        Long size = redisTemplate.opsForZSet().size(BOOKING_QUEUE);
-        return size == null ? 0 : size;
     }
 }
