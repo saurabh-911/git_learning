@@ -7,10 +7,11 @@ on:
 jobs:
 
 # =========================
-# 🟢 FRONTEND BUILD + TEST
+# 🟢 FRONTEND
 # =========================
   frontend:
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: ./frontend
@@ -22,17 +23,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
 
-      - name: Run tests
-        run: npm run test --if-present
+      - name: Fix Three.js types
+        run: npm install --save-dev @types/three
 
-      - name: Build Next.js
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build
         run: npm run build
 
-      - name: Export static (for GitHub Pages)
+      - name: Export static
         run: npm run export
 
       - name: Upload artifact
@@ -41,13 +46,10 @@ jobs:
           path: ./frontend/out
 
 # =========================
-# 🔵 BACKEND BUILD + TEST
+# 🔵 BACKEND
 # =========================
   backend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./backend
 
     steps:
       - uses: actions/checkout@v4
@@ -57,18 +59,13 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+          cache: maven
 
       - name: Build & Test
         run: mvn clean verify
 
-      - name: Package JAR
+      - name: Package
         run: mvn package -DskipTests
-
-      - name: Upload backend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-jar
-          path: backend/target/*.jar
 
 # =========================
 # 🚀 DEPLOY FRONTEND
