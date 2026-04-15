@@ -1,73 +1,40 @@
 # Train Booking System Backend (Spring Boot)
 
-Production-grade Tatkal-scale backend with layered traffic control, secure virtual waiting room, seat hold expiry, and adaptive protection.
+Production-style backend reference for Tatkal-scale spikes with **3-layer traffic control**, a **Redis virtual waiting room**, and **adaptive concurrency**.
 
-## Core design
+## Architecture
 
-1. **Layer-0 (Edge):** Nginx/Cloudflare throttling (`EDGE_THROTTLING.md`)
-2. **Layer-1 (Gateway/App):** Redis token-bucket per user/API key
-3. **Virtual Waiting Room:** Redis ZSET + priority scoring + queue token
-4. **Layer-2 Adaptive Concurrency:** AIMD gate on `/api/book-ticket`
-5. **Seat hold + booking transaction:** `AVAILABLE -> HELD -> BOOKED`
-6. **Circuit breaker:** fast-fail when DB path degrades
-7. **Kafka async side effects only:** booking-confirmed notifications/analytics
+1. **Layer-0 (Edge, conceptual):** Nginx/Cloudflare IP throttling (`EDGE_THROTTLING.md`)
+2. **Layer-1 (Gateway/App):** Token Bucket rate limiting using Redis
+3. **Virtual Waiting Room:** Redis ZSET queue + scheduler releases users/sec
+4. **Layer-2 Adaptive Concurrency:** AIMD concurrency limiter on `/api/book-ticket`
+5. **Core Booking:** transactional, lock-based seat allocation + idempotency
+6. **Kafka Async:** emits only booking-confirmed events
 
-## Seat lifecycle (anti-starvation)
+## Project structure
 
-- `AVAILABLE`: seat can be held.
-- `HELD`: user-exclusive temporary lock for 5 minutes.
-- `BOOKED`: terminal state.
+- `controller/` REST APIs (`/api/book-ticket`, `/queue-status`)
+- `service/` business and control logic
+- `queue/` waiting room + scheduler
+- `filter/` rate limit and adaptive concurrency filters
+- `entity/repository/` persistence model
+- `kafka/` event producer/consumer
+- `config/` app, Redis, Kafka, tunables
+- `gateway/` dedicated Spring Cloud Gateway deployment config (reference)
 
-Expired holds are automatically released by scheduler.
+## Request flow
 
-## Waiting room protections
+1. `POST /api/book-ticket`
+2. Token bucket checks user/API key
+3. User is queued in Redis ZSET (`booking_queue`)
+4. Scheduler releases top N users/sec into `booking_admitted`
+5. Adaptive concurrency gate checks current in-flight limit
+6. Transaction books seat with pessimistic lock and idempotency
+7. Publish Kafka `booking-confirmed` event
 
-- FIFO queue via Redis ZSET
-- Premium priority (`score = timestamp - priorityWeight`)
-- Admitted users receive short-lived queue token (30s)
-- Booking is allowed only for admitted users with valid queue token
+## API examples
 
-## APIs
-
-### 1) Hold seat (required before booking)
-
-`POST /api/hold-seat`
-
-```json
-{
-  "userId": "u-123",
-  "seatId": 1001,
-  "trainId": "12951"
-}
-```
-
-Response:
-
-```json
-{
-  "seatId": 1001,
-  "status": "HELD",
-  "holdExpiresAt": "2026-04-15T12:00:30Z",
-  "message": "Seat held for 5 minutes"
-}
-```
-
-### 2) Queue status + admission token
-
-`GET /queue-status?userId=u-123`
-
-```json
-{
-  "userId": "u-123",
-  "position": 0,
-  "estimatedWaitSeconds": 0,
-  "admitted": true,
-  "queueToken": "0f9d...",
-  "tokenExpiresInSeconds": 30
-}
-```
-
-### 3) Confirm booking
+### Book ticket
 
 `POST /api/book-ticket`
 
@@ -76,45 +43,40 @@ Response:
   "userId": "u-123",
   "seatId": 1001,
   "trainId": "12951",
-  "idempotencyKey": "5db364e4-cd36-4c70-b13d-809ecf",
-  "queueToken": "0f9d...",
-  "userTier": "PREMIUM"
+  "idempotencyKey": "a4f72bd9-8d43-4f2b-9f79-f325"
 }
 ```
 
-Notes:
-- Same `idempotencyKey` returns same booking response.
-- Rejected requests are **never** sent to Kafka.
+Queued response (HTTP 202 from exception handler):
 
-## Metrics & dashboard
+```json
+{ "error": "User is in waiting room. Poll /queue-status." }
+```
 
-Micrometer/Prometheus metrics emitted:
-- `booking.queue.size`
-- `booking.adaptive.limit`
-- `booking.inflight`
-- `booking.success.count`
-- `booking.failed.count`
+Success:
 
-Grafana dashboard template:
-- `observability/grafana/train-booking-dashboard.json`
+```json
+{ "bookingId": 4412, "status": "CONFIRMED", "message": "Seat booked successfully" }
+```
 
-## Dedicated gateway reference
+### Queue status
 
-`gateway/application.yml` contains Spring Cloud Gateway + Redis `RequestRateLimiter` configuration for edge deployment.
+`GET /queue-status?userId=u-123`
 
-## Local run
+```json
+{ "userId": "u-123", "position": 312, "estimatedWaitSeconds": 2, "admitted": false }
+```
+
+## Run locally
 
 ```bash
 docker run -p 6379:6379 redis:7
-# Start PostgreSQL + Kafka locally
-mvn -U clean install
+# Start PostgreSQL and Kafka locally (or via docker-compose)
 mvn spring-boot:run
 ```
 
+## Notes
 
-## MySQL production schema bundle
-
-- Full schema + indexes + constraints + sample dataset + stored procedure:
-  - `database/mysql/train_booking_mysql.sql`
-- Read/write split operational strategy:
-  - `database/mysql/READ_WRITE_SPLIT.md`
+- Rejected booking requests are **not sent to Kafka**.
+- Queue is admission control only; booking stays synchronous + consistent.
+- Tune `traffic-control.*` in `application.yml` for spike profiles.

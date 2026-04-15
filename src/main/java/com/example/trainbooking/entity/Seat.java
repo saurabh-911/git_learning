@@ -1,10 +1,12 @@
 package com.example.trainbooking.entity;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.Getter;
 import lombok.Setter;
-
-import java.time.Instant;
 
 @Entity
 @Table(name = "seats")
@@ -24,13 +26,8 @@ public class Seat {
     @Column(nullable = false)
     private String seatNumber;
 
-    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private SeatStatus status = SeatStatus.AVAILABLE;
-
-    private String heldByUserId;
-
-    private Instant holdExpiresAt;
+    private boolean booked;
 
     @Version
     private Long version;
