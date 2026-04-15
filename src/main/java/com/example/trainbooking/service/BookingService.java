@@ -78,4 +78,33 @@ public class BookingService {
 
         return new BookingResponse(booking.getId(), "CONFIRMED", "Seat booked successfully");
     }
+
+    @Transactional
+public HoldSeatResponse holdSeat(HoldSeatRequest request) {
+    Seat seat = seatRepository.findByIdForUpdate(request.getSeatId())
+            .orElseThrow(() -> new RuntimeException("Seat not found"));
+
+    // check if seat is available or expired
+    if (seat.getStatus() == SeatStatus.BOOKED) {
+        throw new RuntimeException("Seat already booked");
+    }
+
+    if (seat.getStatus() == SeatStatus.HELD &&
+        seat.getHoldExpiresAt().isAfter(Instant.now())) {
+        throw new RuntimeException("Seat already held");
+    }
+
+    // update seat
+    seat.setStatus(SeatStatus.HELD);
+    seat.setHeldByUserId(request.getUserId());
+    seat.setHoldExpiresAt(Instant.now().plusSeconds(300)); // 5 min
+
+    seatRepository.save(seat);
+
+    return new HoldSeatResponse(
+            seat.getId(),
+            seat.getStatus().name(),
+            seat.getHoldExpiresAt()
+    );
+}
 }
